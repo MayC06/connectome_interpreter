@@ -1304,6 +1304,7 @@ def train_model(
     train_divisive_strength: bool = True,
     train_tau: bool = True,
     checkpoint_steps: int = 50,
+    activation_loss_fn: Union[str, Callable] = "mse",
 ):
     """
     Train the model to approximate the targets, while keeping the model parameter change
@@ -1331,6 +1332,9 @@ def train_model(
         train_biases (bool, optional): Whether to train biases. Defaults to True.
         train_divisive_strength (bool, optional): Whether to train divisive strength. Defaults to True.
         train_tau (bool, optional): Whether to train tau. Defaults to True.
+        activation_loss_fn (str or callable, optional): Loss function for activations.
+            Either "mae" (default), "mse", or a callable with signature fn(pred:
+            torch.Tensor, target: torch.Tensor) -> torch.Tensor returning a scalar loss.
     """
 
     def train_test_split(inputs, targets, train_fraction):
@@ -1377,6 +1381,26 @@ def train_model(
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+    # Resolve the loss function once
+    if isinstance(activation_loss_fn, str):
+        loss_fns = {
+            "mae": lambda pred, tgt: torch.abs(pred - tgt).mean(),
+            "mse": lambda pred, tgt: ((pred - tgt) ** 2).mean(),
+        }
+        if activation_loss_fn not in loss_fns:
+            raise ValueError(
+                f"Unknown activation_loss_fn '{activation_loss_fn}'. "
+                f"Use one of {list(loss_fns)} or pass a callable."
+            )
+        loss_fn = loss_fns[activation_loss_fn]
+    elif callable(activation_loss_fn):
+        loss_fn = activation_loss_fn
+    else:
+        raise TypeError(
+            "activation_loss_fn must be a string or callable, "
+            f"got {type(activation_loss_fn).__name__}"
+        )
+
     # Check column names of targets - support both old and new format
     required_cols = ["batch", "neuron_idx", "value"]
     if not all(col in targets.columns for col in required_cols):
@@ -1409,7 +1433,12 @@ def train_model(
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
         # Training history
-        history = {"loss": [], "mse_loss": [], "param_reg_loss": [], "val_loss": []}
+        history = {
+            "loss": [],
+            "activation_loss": [],
+            "param_reg_loss": [],
+            "val_loss": [],
+        }
 
         initial_params = [param.clone() for param in model.parameters()]
 
@@ -1448,7 +1477,7 @@ def train_model(
                 actual = outputs[batch_idx, neuron_idx, layer_idx]
             else:
                 actual = outputs[batch_idx, neuron_idx, :].mean(dim=-1)
-            activation_loss = torch.abs(actual - target_vals).mean()
+            activation_loss = loss_fn(actual, target_vals)
 
             # regularization loss
             param_reg_loss = 0
@@ -1475,7 +1504,7 @@ def train_model(
                     actual = val_outputs[batch_idx_val, neuron_idx_val, layer_idx_val]
                 else:
                     actual = val_outputs[batch_idx_val, neuron_idx_val, :].mean(dim=-1)
-                val_activation_loss = torch.abs(actual - target_vals_val).mean()
+                val_activation_loss = loss_fn(actual, target_vals_val)
                 if wandb:
                     wandb.log({"val_activation_loss": val_activation_loss.item()})
 
@@ -1498,7 +1527,7 @@ def train_model(
                 )
 
             history["loss"].append(loss.item())
-            history["mse_loss"].append(activation_loss.item())
+            history["activation_loss"].append(activation_loss.item())
             history["param_reg_loss"].append(param_reg_loss.item())
             history["val_loss"].append(val_activation_loss.item())
 

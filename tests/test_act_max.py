@@ -792,6 +792,196 @@ class TestTrainModelEnhanced(unittest.TestCase):
         model, history, *_ = result
         self.assertTrue(len(history["loss"]) > 0)
 
+    def test_activation_loss_fn_mae_default(self):
+        """Test that 'mae' is the default and works explicitly"""
+        from connectome_interpreter.activation_maximisation import train_model
+
+        inputs = torch.rand(4, 2, 2).to(self.device)
+        targets = pd.DataFrame(
+            [
+                {"batch": 0, "neuron_idx": 2, "value": 0.5},
+                {"batch": 1, "neuron_idx": 3, "value": 0.3},
+                {"batch": 2, "neuron_idx": 4, "value": 0.7},
+                {"batch": 3, "neuron_idx": 5, "value": 0.4},
+            ]
+        )
+
+        result = train_model(
+            self.model,
+            inputs,
+            targets,
+            num_epochs=3,
+            wandb=False,
+            activation_loss_fn="mae",
+        )
+        _, history, *_ = result
+        self.assertTrue(len(history["loss"]) > 0)
+        self.assertTrue(all(np.isfinite(history["loss"])))
+
+    def test_activation_loss_fn_mse(self):
+        """Test training with 'mse' loss"""
+        from connectome_interpreter.activation_maximisation import train_model
+
+        inputs = torch.rand(4, 2, 2).to(self.device)
+        targets = pd.DataFrame(
+            [
+                {"batch": 0, "neuron_idx": 2, "value": 0.5},
+                {"batch": 1, "neuron_idx": 3, "value": 0.3},
+                {"batch": 2, "neuron_idx": 4, "value": 0.7},
+                {"batch": 3, "neuron_idx": 5, "value": 0.4},
+            ]
+        )
+
+        result = train_model(
+            self.model,
+            inputs,
+            targets,
+            num_epochs=3,
+            wandb=False,
+            activation_loss_fn="mse",
+        )
+        _, history, *_ = result
+        self.assertTrue(len(history["loss"]) > 0)
+        self.assertTrue(all(np.isfinite(history["loss"])))
+
+    def test_activation_loss_fn_custom_callable(self):
+        """Test training with a custom callable loss (e.g. Huber-like)"""
+        from connectome_interpreter.activation_maximisation import train_model
+
+        inputs = torch.rand(4, 2, 2).to(self.device)
+        targets = pd.DataFrame(
+            [
+                {"batch": 0, "neuron_idx": 2, "value": 0.5},
+                {"batch": 1, "neuron_idx": 3, "value": 0.3},
+                {"batch": 2, "neuron_idx": 4, "value": 0.7},
+                {"batch": 3, "neuron_idx": 5, "value": 0.4},
+            ]
+        )
+
+        # Custom L4 loss
+        def custom_loss(pred, tgt):
+            return ((pred - tgt) ** 4).mean()
+
+        result = train_model(
+            self.model,
+            inputs,
+            targets,
+            num_epochs=3,
+            wandb=False,
+            activation_loss_fn=custom_loss,
+        )
+        _, history, *_ = result
+        self.assertTrue(len(history["loss"]) > 0)
+        self.assertTrue(all(np.isfinite(history["loss"])))
+
+    def test_activation_loss_fn_nn_module(self):
+        """Test that an nn.Module loss instance (e.g. nn.MSELoss) works"""
+        from connectome_interpreter.activation_maximisation import train_model
+
+        inputs = torch.rand(4, 2, 2).to(self.device)
+        targets = pd.DataFrame(
+            [
+                {"batch": 0, "neuron_idx": 2, "value": 0.5},
+                {"batch": 1, "neuron_idx": 3, "value": 0.3},
+                {"batch": 2, "neuron_idx": 4, "value": 0.7},
+                {"batch": 3, "neuron_idx": 5, "value": 0.4},
+            ]
+        )
+
+        result = train_model(
+            self.model,
+            inputs,
+            targets,
+            num_epochs=3,
+            wandb=False,
+            activation_loss_fn=torch.nn.MSELoss(),
+        )
+        _, history, *_ = result
+        self.assertTrue(len(history["loss"]) > 0)
+        self.assertTrue(all(np.isfinite(history["loss"])))
+
+    def test_activation_loss_fn_invalid_string(self):
+        """Test that an unknown loss-name string raises ValueError"""
+        from connectome_interpreter.activation_maximisation import train_model
+
+        inputs = torch.rand(4, 2, 2).to(self.device)
+        targets = pd.DataFrame([{"batch": 0, "neuron_idx": 2, "value": 0.5}])
+
+        with self.assertRaises(ValueError):
+            train_model(
+                self.model,
+                inputs,
+                targets,
+                num_epochs=1,
+                wandb=False,
+                activation_loss_fn="not_a_real_loss",
+            )
+
+    def test_activation_loss_fn_invalid_type(self):
+        """Test that a non-string, non-callable raises TypeError"""
+        from connectome_interpreter.activation_maximisation import train_model
+
+        inputs = torch.rand(4, 2, 2).to(self.device)
+        targets = pd.DataFrame([{"batch": 0, "neuron_idx": 2, "value": 0.5}])
+
+        with self.assertRaises(TypeError):
+            train_model(
+                self.model,
+                inputs,
+                targets,
+                num_epochs=1,
+                wandb=False,
+                activation_loss_fn=42,  # not a string or callable
+            )
+
+    def test_mae_vs_mse_produce_different_losses(self):
+        """Test that MAE and MSE actually produce different loss values"""
+        from connectome_interpreter.activation_maximisation import train_model
+
+        inputs = torch.rand(4, 2, 2).to(self.device)
+        targets = pd.DataFrame(
+            [
+                {"batch": 0, "neuron_idx": 2, "value": 0.5},
+                {"batch": 1, "neuron_idx": 3, "value": 0.3},
+                {"batch": 2, "neuron_idx": 4, "value": 0.7},
+                {"batch": 3, "neuron_idx": 5, "value": 0.4},
+            ]
+        )
+
+        # Re-init two identical models so the only difference is the loss fn
+        def fresh_model():
+            torch.manual_seed(0)
+            return MultilayeredNetwork(
+                self.all_weights,
+                self.sensory_indices,
+                num_layers=2,
+                idx_to_group=self.idx_to_group,
+            ).to(self.device)
+
+        _, hist_mae, *_ = train_model(
+            fresh_model(),
+            inputs,
+            targets,
+            num_epochs=3,
+            wandb=False,
+            activation_loss_fn="mae",
+            seed=0,
+        )
+        _, hist_mse, *_ = train_model(
+            fresh_model(),
+            inputs,
+            targets,
+            num_epochs=3,
+            wandb=False,
+            activation_loss_fn="mse",
+            seed=0,
+        )
+
+        # The two loss curves shouldn't be identical
+        self.assertFalse(
+            np.allclose(hist_mae["activation_loss"], hist_mse["activation_loss"])
+        )
+
 
 class TestSaliencyEnhanced(unittest.TestCase):
     def setUp(self):
