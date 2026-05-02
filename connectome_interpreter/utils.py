@@ -508,10 +508,11 @@ def get_ngl_link(
     scene=None,
     source: list | None = None,
     normalise: str | None = None,
+    diverging: bool = False,
     include_postsynaptic_neuron: bool = False,
     diff_colours_per_layer: bool = False,
     colors: list | None = None,
-    colormap: str = "viridis",
+    colormap: str | None = None,
     df_format: str = "wide",
     open_here: bool = False,
     width: int = 1500,
@@ -543,6 +544,10 @@ def get_ngl_link(
         normalise (str, optional): How to normalise the values. `layer` for
             normalising within each layer; `all` for normalising by the min and
             max value in the entire dataframe. Default to None.
+        diverging (bool, optional): If True, normalisation is symmetric around
+            zero so that original 0 maps to the centre of the colormap. Use
+            this when your data has both positive and negative values and you
+            want 0 to read as a neutral midpoint. Default False.
         include_postsynaptic_neuron (bool, optional): Whether to include the
             postsynaptic neuron (column names of `df`) in the visualisation.
             Default to False. Only works if `df_format` is 'wide'.
@@ -551,9 +556,9 @@ def get_ngl_link(
         colors (list, optional): A list of colours to use for the neurons in
             each layer, if `diff_colours_per_layer` is True. If None, a
             default list of colours is used. Default to None.
-        colormap (str, optional): The name of the colormap to use for
-            colouring the neurons in every layer, if `diff_colours_per_layer`
-            is False. Default to 'viridis'.
+        colormap (str, optional): Name of the colormap. If None (default), 'RdBu_r' is
+            used (red represents higher values) when diverging=True and 'viridis'
+            otherwise.
         df_format (str, optional): The format of the DataFrame. Either 'wide'
             or 'long'. Default to 'wide'.
         open_here (bool, optional): Whether to display the Neuroglancer scene in the
@@ -588,10 +593,17 @@ def get_ngl_link(
     if isinstance(df, pd.Series):
         df = df.to_frame()
 
+    # Keep an un-normalised copy so we can filter true zeros later
+    df_original = df.copy()
+
+    # Pick a sensible default colormap based on diverging
+    if colormap is None:
+        colormap = "RdBu_r" if diverging else "viridis"
+
     # define a scene if not given:
-    if scene == None:
+    if scene is None:
         no_scene_provided = True
-        # Initialize a scene
+        # initialize a scene
         scene = ngl.Scene()
         scene["layout"] = "3d"
         scene["position"] = [527216.1875, 208847.125, 84774.0625]
@@ -624,8 +636,7 @@ def get_ngl_link(
     else:
         no_scene_provided = False
 
-    # Define a list of colors optimized for human perception on a dark
-    # background
+    # Define a list of colors optimized for human perception on a dark background
     if colors is None:
         colors = [
             "#ff6b6b",
@@ -655,12 +666,22 @@ def get_ngl_link(
             "#f5b0cb",
         ]
 
-    # Normalize the values in the DataFrame
-    if normalise is not None:
-        if normalise == "all":
-            if df_format == "wide":
+    # ---- Global normalisation (normalise='all') ----
+    if normalise == "all":
+        if df_format == "wide":
+            if diverging:
+                max_abs = df.abs().max().max()
+                if max_abs > 0:
+                    # maps [-max_abs, +max_abs] -> [0, 1] with 0 -> 0.5
+                    df = df / (2 * max_abs) + 0.5
+            else:
                 df = (df - df.min().min()) / (df.max().max() - df.min().min())
-            elif df_format == "long":
+        elif df_format == "long":
+            if diverging:
+                max_abs = df["activation"].abs().max()
+                if max_abs > 0:
+                    df["activation"] = df["activation"] / (2 * max_abs) + 0.5
+            else:
                 df["activation"] = (df["activation"] - df["activation"].min()) / (
                     df["activation"].max() - df["activation"].min()
                 )
@@ -693,11 +714,13 @@ def get_ngl_link(
         if df_format == "wide":
             df_group = df[[ite]]
             if no_connection_invisible:
-                df_group = df_group[df_group.iloc[:, 0] > 0]
+                df_group = df_group[df_original[ite] != 0]
         elif df_format == "long":
-            df_group = df[df.layer == ite]
-            # make df_group: neuron_id in index, activation in the first column
-            df_group.set_index("neuron_id", inplace=True)
+            df_group = df[df.layer == ite].copy()
+            if no_connection_invisible:
+                orig_act = df_original.loc[df_group.index, "activation"]
+                df_group = df_group[orig_act != 0]
+            df_group = df_group.set_index("neuron_id")
             df_group = df_group[["activation"]]
 
         if group_by is None:
@@ -711,13 +734,16 @@ def get_ngl_link(
 
             layer = ngl.SegmentationLayer(source=source, name=str(ite) + " " + str(grp))
 
-            if normalise is not None:
-                if normalise == "layer":
-                    # if there is only one row, then keep it as is
-                    if df_group_grp.shape[0] > 1:
-                        df_group_grp = (df_group_grp - df_group_grp.min()) / (
-                            df_group_grp.max() - df_group_grp.min()
-                        )
+            # ---- Per-layer normalisation (normalise='layer') ----
+            if normalise == "layer" and df_group_grp.shape[0] > 1:
+                if diverging:
+                    max_abs = df_group_grp.abs().max().max()
+                    if max_abs > 0:
+                        df_group_grp = df_group_grp / (2 * max_abs) + 0.5
+                else:
+                    df_group_grp = (df_group_grp - df_group_grp.min()) / (
+                        df_group_grp.max() - df_group_grp.min()
+                    )
 
             layer["segments"] = list(df_group_grp.index.astype(str))
             if diff_colours_per_layer:
@@ -1192,8 +1218,7 @@ def plot_layered_paths(
 
         # Set physics options for the network with high spring constant
         # to keep straighter arrows when nodes are moved around
-        net2.set_options(
-            """
+        net2.set_options("""
         var options = {
         "physics": {
             "enabled": false,
@@ -1209,8 +1234,7 @@ def plot_layered_paths(
         "edges": {
             "smooth": false}
         }
-        """
-        )
+        """)
         # net2.show_buttons(filter_=["node", "edge", "physics"])
 
         if "COLAB_GPU" in os.environ:
@@ -2573,15 +2597,13 @@ def plot_paths(
                 e["label"] = f"{e['weight_original']:.{weight_decimals}f}"
                 e["font"] = {"size": edge_text_size, "face": "arial"}
 
-        net.set_options(
-            """
+        net.set_options("""
             var options = {
               "physics":{"enabled":false,"solver":"forceAtlas2Based",
               "forceAtlas2Based":{"springConstant":0.1},"minVelocity":0.1},
               "nodes":{"physics":false},"edges":{"smooth":false}
             }
-            """
-        )
+            """)
 
         if "COLAB_GPU" in os.environ:
             # display of plot in ipynb only works in colab

@@ -1333,7 +1333,7 @@ def train_model(
         train_divisive_strength (bool, optional): Whether to train divisive strength. Defaults to True.
         train_tau (bool, optional): Whether to train tau. Defaults to True.
         activation_loss_fn (str or callable, optional): Loss function for activations.
-            Either "mae" (default), "mse", or a callable with signature fn(pred:
+            Either "mae", "mse" (default), or a callable with signature fn(pred:
             torch.Tensor, target: torch.Tensor) -> torch.Tensor returning a scalar loss.
     """
 
@@ -2093,6 +2093,8 @@ def get_gradients(
             dfs.set_index(["group", "batch_name"]).sort_index()
             * acts.set_index(["group", "batch_name"]).sort_index()
         ).reset_index()
+
+    torch.cuda.empty_cache()
 
     return dfs
 
