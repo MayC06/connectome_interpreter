@@ -1589,7 +1589,7 @@ def check_consecutive_layers(df):
     return consecutive_layers
 
 
-def display_df(df, cmap="Blues", vmin=None, vmax=None):
+def display_df(df, cmap=None, vmin=None, vmax=None, diverging=False):
     """
     Thin wrapper around the `display` function to display a DataFrame with a
         background gradient.
@@ -1597,20 +1597,40 @@ def display_df(df, cmap="Blues", vmin=None, vmax=None):
     Args:
         df (pd.DataFrame): The DataFrame to display.
         cmap (str, optional): The name of the colormap to use for the
-            background gradient. Defaults to 'Blues'.
+            background gradient. If None (default), 'RdBu_r' is used when
+            diverging=True (red is high) and 'Blues' otherwise.
         vmin (float, optional): The minimum value for the colormap. If None,
-            the minimum value of the DataFrame is used. Defaults to None.
+            it defaults to -max(|df|) when diverging=True, otherwise the
+            minimum value of the DataFrame.
         vmax (float, optional): The maximum value for the colormap. If None,
-            the maximum value of the DataFrame is used. Defaults to None.
+            it defaults to +max(|df|) when diverging=True, otherwise the
+            maximum value of the DataFrame.
+        diverging (bool, optional): If True, the colour scale is symmetric
+            around zero so that 0 maps to the centre of the colormap. Use
+            this when the DataFrame contains both positive and negative
+            values and you want 0 to read as a neutral midpoint.
+            Defaults to False.
 
     Returns:
         None:
             This function displays the DataFrame using the `display` function
     """
-    if vmin is None:
-        vmin = df.min().min()
-    if vmax is None:
-        vmax = df.max().max()
+    # Pick a sensible default colormap based on diverging
+    if cmap is None:
+        cmap = "RdBu_r" if diverging else "Blues"
+
+    if diverging:
+        max_abs = df.abs().max().max()
+        if vmin is None:
+            vmin = -max_abs
+        if vmax is None:
+            vmax = max_abs
+    else:
+        if vmin is None:
+            vmin = df.min().min()
+        if vmax is None:
+            vmax = df.max().max()
+
     result_dp = df.style.background_gradient(cmap=cmap, vmin=vmin, vmax=vmax)
     display(result_dp)
 
