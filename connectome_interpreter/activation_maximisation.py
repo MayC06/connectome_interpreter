@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 import contextlib
@@ -2419,87 +2420,85 @@ def get_neuron_activation(
     idx_to_group: dict | None = None,
 ) -> pd.DataFrame:
     """
-    Get the activations for specified indices across timepoints, include
-    batch name and group information when available.
+    Get the activations for specified indices across timepoints, include batch name and
+    group information when available. Memory efficiency provided by Claude.
 
     Args:
-        activations (torch.Tensor | numpy.ndarray): Output activation from
-            the model. Shape should be (batch_size, num_neurons,
-            num_timepoints) or (num_neurons, num_timepoints).
-        neuron_indices (arrayable): The indices of the neurons to get
-            activations for.
-        batch_names (arrayable, optional): The names of the batches.
-            Defaults to None. If activations.ndim == 3, then this should be
-            supplied. If not, batch names will be e.g. 'batch_0', 'batch_1',
-            etc.
-        idx_to_group (dict, optional): A dictionary mapping indices to
-            groups. Defaults to None.
+        activations (torch.Tensor | numpy.ndarray): Output activation from the model.
+            Shape should be (batch_size, num_neurons, num_timepoints) or (num_neurons,
+            num_timepoints).
+        neuron_indices (arrayable): The indices of the neurons to get activations for.
+        batch_names (arrayable, optional): The names of the batches. Defaults to None.
+            If activations.ndim == 3, then this should be supplied. If not, batch names
+            will be e.g. 'batch_0', 'batch_1', etc.
+        idx_to_group (dict, optional): A dictionary mapping indices to groups. Defaults
+            to None.
 
     Returns:
         pd.DataFrame:
             The activations for the neurons, with the first columns being batch_names,
             neuron_indices, and group. The rest are the timesteps.
     """
-    neuron_indices = list(to_nparray(neuron_indices))
-
+    # CPU torch -> numpy is a zero-copy view; only GPU tensors copy.
     if isinstance(activations, torch.Tensor):
-        activations = activations.cpu().detach().numpy()
+        activations = activations.detach().cpu().numpy()
+
+    n_timepoints = activations.shape[-1]
+    in_dtype = activations.dtype
 
     if idx_to_group is None:
         idx_to_group = {idx: idx for idx in range(activations.shape[-2])}
 
+    # Bucket once. Insertion order = output row order.
+    group_to_indices: dict[object, list[int]] = defaultdict(list)
+    for idx in neuron_indices:
+        group_to_indices[idx_to_group[idx]].append(idx)
+    groups = list(group_to_indices.keys())
+    n_groups = len(groups)
+
+    # ---- 2D ---------------------------------------------------------------
     if activations.ndim == 2:
-        # message if batch_names is not None
         if batch_names is not None:
             print("batch_names is ignored for 2D activations.")
 
-        data = activations[neuron_indices, :]
-        df = pd.DataFrame(
-            data,
-            columns=[f"time_{i}" for i in range(activations.shape[1])],
-            index=neuron_indices,
-        )
-        df.index.name = "idx"
-        df["group"] = [idx_to_group[idx] for idx in neuron_indices]
-        # discard index, use group as index
-        # then groupby group, and get mean
-        df = df.set_index("group").groupby("group").mean().reset_index()
+        result = np.empty((n_groups, n_timepoints), dtype=in_dtype)
+        for gi, g in enumerate(groups):
+            # float64 sum -> stable mean, then cast back
+            result[gi] = (
+                activations[group_to_indices[g], :].sum(axis=0, dtype=np.float64)
+                / len(group_to_indices[g])
+            ).astype(in_dtype, copy=False)
 
+        df = pd.DataFrame(result, columns=[f"time_{i}" for i in range(n_timepoints)])
+        df.insert(0, "group", groups)
         return df
 
-    if activations.ndim == 3:
-        if batch_names is None:
-            # make batch names
-            batch_names = [f"batch_{i}" for i in range(activations.shape[0])]
-
-        batch_names = list(to_nparray(batch_names, unique=False))
-
-        # make sure length matches
-        if activations.shape[0] != len(batch_names):
-            raise ValueError(
-                "Length of batch_names has to be the same as " "activations.shape[0]."
-            )
-
-        data = activations[:, neuron_indices, :].reshape(
-            -1, activations.shape[2]
-        )  # from (batch, neuron, time) to (batch*neuron, time)
-
-        # Create indices for the first two dimensions
-        # in the end, we want batch * n_indices rows
-        # that's activations.shape[0] * len(neuron_indices) rows
-        batch_names = [o for o in batch_names for _ in range(len(neuron_indices))]
-        neuron_indices = neuron_indices * activations.shape[0]
-
-        # Combine indices and data into a DataFrame
-        df = pd.DataFrame(
-            data, columns=[f"time_{i}" for i in range(activations.shape[2])]
+    # ---- 3D ---------------------------------------------------------------
+    n_batches = activations.shape[0]
+    if batch_names is None:
+        batch_names = [f"batch_{i}" for i in range(n_batches)]
+    batch_names = list(to_nparray(batch_names, unique=False))
+    if n_batches != len(batch_names):
+        raise ValueError(
+            "Length of batch_names has to be the same as activations.shape[0]."
         )
-        df["batch_name"] = batch_names
-        df["group"] = [idx_to_group[idx] for idx in neuron_indices]
 
-        # groupby batch_name and group, calculate average
-        df = df.groupby(["batch_name", "group"]).mean().reset_index()
+    # Row layout: row b*n_groups + gi corresponds to (batch=b, group=gi),
+    # written via the gi::n_groups stride. Matches the original column order
+    # (batch_name varies slowest, group varies within each batch).
+    result = np.empty((n_batches * n_groups, n_timepoints), dtype=in_dtype)
+    for gi, g in enumerate(groups):
+        inds = group_to_indices[g]
+        # (n_batches, |g|, n_timepoints) -> sum over neurons -> (n_batches, n_timepoints)
+        mean_val = activations[:, inds, :].sum(axis=1, dtype=np.float64) / len(inds)
+        result[gi::n_groups] = mean_val.astype(in_dtype, copy=False)
 
+    out_batch_names = [bn for bn in batch_names for _ in range(n_groups)]
+    out_groups = groups * n_batches
+
+    df = pd.DataFrame(result, columns=[f"time_{i}" for i in range(n_timepoints)])
+    df.insert(0, "batch_name", out_batch_names)
+    df.insert(1, "group", out_groups)
     return df
 
 
