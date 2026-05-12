@@ -3126,6 +3126,95 @@ class TestDivisiveStrengthTraining(unittest.TestCase):
         )
 
 
+class TestBiasTraining(unittest.TestCase):
+    """The biases property returns abs(raw_biases), so raw_biases sitting at
+    exactly 0 sits on the |x| kink where the gradient vanishes and never trains.
+    training_mode nudges those entries to 1e-6 to break the symmetry — but only
+    when train_biases=True, so inference paths keep biases at exactly zero."""
+
+    def setUp(self):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        dense = np.random.rand(6, 6) * 0.1
+        self.weights = csr_matrix(dense)
+        self.sensory_indices = [0, 1]
+        self.idx_to_group = {i: f"type_{i//2}" for i in range(6)}
+
+    def _model(self, default_bias=0.0):
+        return MultilayeredNetwork(
+            self.weights,
+            self.sensory_indices,
+            num_layers=2,
+            idx_to_group=self.idx_to_group,
+            default_bias=default_bias,
+        ).to(self.device)
+
+    def test_training_mode_nudges_zero_biases(self):
+        """Entering training_mode with train_biases=True must push exactly-zero
+        raw_biases off the abs() kink to 1e-6."""
+        model = self._model(default_bias=0.0)
+        self.assertTrue(torch.all(model.raw_biases == 0.0))
+
+        with training_mode(model, train_biases=True):
+            self.assertFalse(
+                torch.any(model.raw_biases == 0.0),
+                "zero raw_biases must be nudged inside training_mode",
+            )
+            self.assertTrue(
+                torch.allclose(
+                    model.raw_biases,
+                    torch.full_like(model.raw_biases, 1e-6),
+                )
+            )
+
+    def test_training_mode_preserves_nonzero_biases(self):
+        """Nudge condition is == 0 exactly; other values must be untouched."""
+        model = self._model(default_bias=0.0)
+        with torch.no_grad():
+            model.raw_biases[0] = 0.5
+            model.raw_biases[1] = -0.3
+            # leave model.raw_biases[2] at 0.0
+
+        with training_mode(model, train_biases=True):
+            self.assertAlmostEqual(model.raw_biases[0].item(), 0.5, places=6)
+            self.assertAlmostEqual(model.raw_biases[1].item(), -0.3, places=6)
+            self.assertAlmostEqual(model.raw_biases[2].item(), 1e-6, places=8)
+
+    def test_training_mode_skips_nudge_when_not_training_biases(self):
+        """Inference / non-bias-training paths must leave zero biases at zero."""
+        model = self._model(default_bias=0.0)
+        with training_mode(model, train_biases=False):
+            self.assertTrue(
+                torch.all(model.raw_biases == 0.0),
+                "raw_biases must stay zero when train_biases=False",
+            )
+
+    def test_train_model_updates_biases_from_zero_init(self):
+        """Regression: with default_bias=0 and train_biases=True, biases used
+        to be pinned at zero forever because abs() has zero gradient at zero."""
+        model = self._model(default_bias=0.0)
+        biases_before = model.raw_biases.detach().clone()
+
+        inp = torch.rand(4, 2, 2, device=self.device)
+        targets = pd.DataFrame(
+            [{"batch": i, "neuron_idx": 2, "layer": 1, "value": 0.3} for i in range(4)]
+        )
+        train_model(
+            model,
+            inp,
+            targets,
+            num_epochs=5,
+            wandb=False,
+            train_slopes=False,
+            train_biases=True,
+            train_divisive_strength=False,
+            train_tau=False,
+        )
+        self.assertFalse(
+            torch.allclose(model.raw_biases.detach(), biases_before),
+            "train_biases=True with zero init should move raw_biases off zero",
+        )
+
+
 class TestMultiGroupDivnorm(unittest.TestCase):
     def setUp(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -1275,6 +1275,15 @@ def training_mode(
     train_tau=True,
 ):
     """Context manager for training mode - enables gradients for slopes and biases."""
+    # If biases are about to be trained and any sit on the |x|=0 kink,
+    # nudge them off so abs() gradients can flow. Without this, raw_biases
+    # initialised at default_bias=0 stay stuck forever.
+    if train_biases and model.raw_biases is not None:
+        with torch.no_grad():
+            zero_mask = model.raw_biases == 0
+            if zero_mask.any():
+                model.raw_biases[zero_mask] = 1e-6
+
     model.set_param_grads(
         slopes=train_slopes,
         raw_biases=train_biases,
@@ -1309,8 +1318,8 @@ def train_model(
 ):
     """
     Train the model to approximate the targets, while keeping the model parameter change
-    minumum (param_reg_lambda decdes how strongly). The loss is the average absolute
-    difference between the model activations and the target activations.
+    minumum (param_reg_lambda decdes how strongly). The loss is the mean squared error
+    (default) between the model activations and the target activations.
 
     Args:
         model (MultilayeredNetwork): The model to train.
@@ -1331,6 +1340,9 @@ def train_model(
         seed (int, optional): Random seed for reproducibility.
         train_slopes (bool, optional): Whether to train slopes. Defaults to True.
         train_biases (bool, optional): Whether to train biases. Defaults to True.
+            Note: biases use abs(raw_biases) internally to keep them positive. When
+            enabled, any raw_biases sitting exactly at 0 are nudged to 1e-6 to break the
+            abs() kink where gradients vanish.
         train_divisive_strength (bool, optional): Whether to train divisive strength. Defaults to True.
         train_tau (bool, optional): Whether to train tau. Defaults to True.
         activation_loss_fn (str or callable, optional): Loss function for activations.
