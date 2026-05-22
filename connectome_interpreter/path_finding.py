@@ -309,13 +309,15 @@ def enumerate_paths(
     start_layer: int = 1,
     end_layer: Optional[int] = None,
     return_generator: bool = False,
+    loop_mode: str = "allow",
 ) -> Union[
     List[List[Tuple[Union[str, int], Union[str, int], float]]],
     Generator[List[Tuple[Union[str, int], Union[str, int], float]], None, None],
 ]:
     """
     Finds all paths that begin with an edge in start_layer and end with an edge in
-    end_layer, assuming valid paths proceed layer-by-layer without skipping.
+    end_layer, assuming valid paths proceed layer-by-layer without skipping. This
+    function was written by Claude.
 
     Args:
       edgelist (pd.DataFrame): The edgelist of the entire graph. Must contain columns:
@@ -326,6 +328,14 @@ def enumerate_paths(
         the maximum layer in the edgelist.
       return_generator (bool, optional): If True, returns a generator instead of a list.
         Useful for large graphs to avoid memory issues. Defaults to False.
+      loop_mode (str, optional): How to handle loops in paths. Options:
+
+        - "allow" (default): Return all paths, including those that revisit a vertex.
+        - "exclude": Return only loop-free (simple) paths. A node appearing at both
+          the start and end of a path is allowed (e.g. A-B-C-A is kept, capturing the
+          s-t cycle use case), but a node reappearing in the middle is a loop and the
+          path is dropped (e.g. A-B-A-C). This matches the convention in
+          :func:`count_paths`.
 
     Returns:
       Union[List[List[Tuple]], Generator]:
@@ -337,6 +347,9 @@ def enumerate_paths(
         end_layer = edgelist["layer"].max()
     if start_layer > end_layer:
         raise ValueError("start_layer must be less than or equal to end_layer.")
+    if loop_mode not in ("allow", "exclude"):
+        raise ValueError(f"loop_mode must be 'allow' or 'exclude', got '{loop_mode}'")
+    exclude_loops = loop_mode == "exclude"
 
     # Build adjacency: adj[layer][pre] → list of (post, weight)
     # pre and post can be either strings or integers
@@ -353,18 +366,31 @@ def enumerate_paths(
                 node: Union[str, int],
                 layer: int,
                 path: List[Tuple[Union[str, int], Union[str, int], float]],
+                visited: set,
+                start_node: Union[str, int],
             ):
+                # Loop check (only active when loop_mode == "exclude"). A revisited
+                # node is rejected, except the start node reappearing exactly at the
+                # final position, which closes an s-t cycle and is kept.
+                if exclude_loops and node in visited:
+                    if layer == end_layer and node == start_node:
+                        yield path.copy()
+                    return
                 if layer == end_layer:
                     yield path.copy()  # yield a copy to avoid mutation issues
                     return
+                if exclude_loops:
+                    visited.add(node)
                 for post, wt in adj.get(layer + 1, {}).get(node, []):
                     path.append((node, post, wt))
-                    yield from dfs(post, layer + 1, path)
+                    yield from dfs(post, layer + 1, path, visited, start_node)
                     path.pop()
+                if exclude_loops:
+                    visited.remove(node)
 
             for pre, edges in adj.get(start_layer, {}).items():
                 for post, wt in edges:
-                    yield from dfs(post, start_layer, [(pre, post, wt)])
+                    yield from dfs(post, start_layer, [(pre, post, wt)], {pre}, pre)
 
         return generate_paths()
     else:
@@ -375,18 +401,31 @@ def enumerate_paths(
             node: Union[str, int],
             layer: int,
             path: List[Tuple[Union[str, int], Union[str, int], float]],
+            visited: set,
+            start_node: Union[str, int],
         ):
+            # Loop check (only active when loop_mode == "exclude"). A revisited node
+            # is rejected, except the start node reappearing exactly at the final
+            # position, which closes an s-t cycle and is kept.
+            if exclude_loops and node in visited:
+                if layer == end_layer and node == start_node:
+                    paths.append(path.copy())
+                return
             if layer == end_layer:
                 paths.append(path.copy())  # append a copy to avoid mutation
                 return
+            if exclude_loops:
+                visited.add(node)
             for post, wt in adj.get(layer + 1, {}).get(node, []):
                 path.append((node, post, wt))
-                dfs(post, layer + 1, path)
+                dfs(post, layer + 1, path, visited, start_node)
                 path.pop()
+            if exclude_loops:
+                visited.remove(node)
 
         for pre, edges in adj.get(start_layer, {}).items():
             for post, wt in edges:
-                dfs(post, start_layer, [(pre, post, wt)])
+                dfs(post, start_layer, [(pre, post, wt)], {pre}, pre)
 
         return paths
 

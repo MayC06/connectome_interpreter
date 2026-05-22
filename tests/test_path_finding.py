@@ -452,6 +452,148 @@ class TestEnumeratePathsBetweenLayers(unittest.TestCase):
         self.assertTrue(hasattr(paths_gen, "__iter__"))
         self.assertTrue(hasattr(paths_gen, "__next__"))
 
+    # ------------------------ loop_mode tests
+    @staticmethod
+    def node_seq(path):
+        """Node sequence of a path: first pre, then the post of every edge."""
+        return (path[0][0],) + tuple(edge[1] for edge in path)
+
+    def test_loop_mode_default_allows_loops(self):
+        """Default loop_mode='allow' keeps paths that revisit a vertex."""
+        edges = [
+            ("a", "b", 1.0, 1),
+            ("b", "a", 1.0, 2),  # loop back to 'a'
+            ("a", "c", 1.0, 3),
+        ]
+        df = self.mk_df(edges)
+        paths = enumerate_paths(df, 1, 3)  # default == "allow"
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(self.node_seq(paths[0]), ("a", "b", "a", "c"))
+
+    def test_exclude_loops_drops_middle_revisit(self):
+        """loop_mode='exclude' drops a path whose start node reappears mid-path."""
+        edges = [
+            ("a", "b", 1.0, 1),
+            ("b", "a", 1.0, 2),
+            ("a", "c", 1.0, 3),
+        ]
+        df = self.mk_df(edges)
+        self.assertEqual(enumerate_paths(df, 1, 3, loop_mode="exclude"), [])
+
+    def test_exclude_loops_keeps_start_equals_end(self):
+        """A node appearing only at the start and the end is a valid s-t cycle."""
+        edges = [
+            ("a", "b", 1.0, 1),
+            ("b", "c", 1.0, 2),
+            ("c", "a", 1.0, 3),  # returns to 'a' at the end
+        ]
+        df = self.mk_df(edges)
+        paths = enumerate_paths(df, 1, 3, loop_mode="exclude")
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(self.node_seq(paths[0]), ("a", "b", "c", "a"))
+
+    def test_exclude_loops_drops_abcaa(self):
+        """A-B-C-A-A is a loop (A in the middle then again) and is dropped."""
+        edges = [
+            ("a", "b", 1.0, 1),
+            ("b", "c", 1.0, 2),
+            ("c", "a", 1.0, 3),
+            ("a", "a", 1.0, 4),
+        ]
+        df = self.mk_df(edges)
+        self.assertEqual(enumerate_paths(df, 1, 4, loop_mode="exclude"), [])
+
+    def test_exclude_loops_no_loop_equals_allow(self):
+        """With no loops present, 'exclude' and 'allow' return identical paths."""
+        edges = [
+            ("a", "b", 1.0, 1),
+            ("b", "c", 1.0, 2),
+            ("c", "d", 1.0, 3),
+        ]
+        df = self.mk_df(edges)
+        allow = enumerate_paths(df, 1, 3, loop_mode="allow")
+        exclude = enumerate_paths(df, 1, 3, loop_mode="exclude")
+        self.assertEqual(self.to_set(allow), self.to_set(exclude))
+        self.assertEqual(len(exclude), 1)
+
+    def test_exclude_loops_diamond(self):
+        """Both arms of a loop-free diamond survive 'exclude'."""
+        edges = [
+            ("a", "b", 1.0, 1),
+            ("a", "c", 1.0, 1),
+            ("b", "d", 1.0, 2),
+            ("c", "d", 1.0, 2),
+        ]
+        df = self.mk_df(edges)
+        paths = enumerate_paths(df, 1, 2, loop_mode="exclude")
+        self.assertEqual(len(paths), 2)
+        self.assertEqual(
+            {self.node_seq(p) for p in paths},
+            {("a", "b", "d"), ("a", "c", "d")},
+        )
+
+    def test_exclude_loops_complex_keeps_only_simple(self):
+        """Mixed graph: keep the three simple paths, drop the one that revisits 'b'."""
+        edges = [
+            ("a", "b", 1.0, 1),
+            ("a", "c", 1.0, 1),
+            ("b", "d", 1.0, 2),
+            ("c", "d", 1.0, 2),
+            ("d", "b", 1.0, 3),  # a->b->d->b revisits 'b' in the middle
+            ("d", "e", 1.0, 3),
+        ]
+        df = self.mk_df(edges)
+        allow = enumerate_paths(df, 1, 3, loop_mode="allow")
+        exclude = enumerate_paths(df, 1, 3, loop_mode="exclude")
+        self.assertEqual(len(allow), 4)
+        kept = {self.node_seq(p) for p in exclude}
+        self.assertEqual(
+            kept,
+            {("a", "b", "d", "e"), ("a", "c", "d", "b"), ("a", "c", "d", "e")},
+        )
+        self.assertNotIn(("a", "b", "d", "b"), kept)
+
+    def test_exclude_loops_matches_count_paths(self):
+        """enumerate_paths length agrees with count_paths for both loop modes."""
+        edges = [
+            ("a", "b", 1.0, 1),
+            ("a", "c", 1.0, 1),
+            ("b", "d", 1.0, 2),
+            ("c", "d", 1.0, 2),
+            ("d", "b", 1.0, 3),
+            ("d", "e", 1.0, 3),
+            ("b", "f", 1.0, 4),
+            ("e", "f", 1.0, 4),
+        ]
+        df = self.mk_df(edges)
+        for mode in ("allow", "exclude"):
+            self.assertEqual(
+                len(enumerate_paths(df, 1, 4, loop_mode=mode)),
+                count_paths(df, 1, 4, loop_mode=mode),
+            )
+
+    def test_generator_exclude_equals_list(self):
+        """Generator and list versions agree under loop_mode='exclude'."""
+        edges = [
+            ("a", "b", 1.0, 1),
+            ("a", "c", 1.0, 1),
+            ("b", "d", 1.0, 2),
+            ("c", "d", 1.0, 2),
+            ("d", "b", 1.0, 3),
+            ("d", "e", 1.0, 3),
+        ]
+        df = self.mk_df(edges)
+        list_paths = enumerate_paths(df, 1, 3, loop_mode="exclude")
+        gen_paths = list(
+            enumerate_paths(df, 1, 3, loop_mode="exclude", return_generator=True)
+        )
+        self.assertEqual(self.to_set(list_paths), self.to_set(gen_paths))
+
+    def test_invalid_loop_mode_raises(self):
+        df = self.mk_df([("a", "b", 1.0, 1), ("b", "c", 1.0, 2)])
+        with self.assertRaises(ValueError):
+            enumerate_paths(df, 1, 2, loop_mode="invalid")
+
 
 class TestFindShortestPaths(unittest.TestCase):
 
