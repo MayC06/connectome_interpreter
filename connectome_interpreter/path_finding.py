@@ -1559,9 +1559,9 @@ def el_within_n_steps(
     type. This might be especially useful for optic lobe connectivity analysis that's
     spatially local.
 
-    Two neuron groups might be connected to different extents in different layers
-    (when a pair of cell types are connected with different individual neurons in
-    different layers.). In that case the highest weight is returned by default, but see
+    Two neuron groups might be connected to different extents in different layers (when
+    a pair of cell types are connected with different individual neurons in different
+    layers.). In that case the highest weight is returned by default, but see
     `all_connections_between_groups` argument.
 
     Args:
@@ -1597,7 +1597,7 @@ def el_within_n_steps(
             A DataFrame containing the edges of the paths found, including columns 'pre',
             'post', and 'weight'. If `return_raw_el` is True, returns a tuple of two
             DataFrames: the first is the grouped edges, and the second is the raw edges
-            before grouping. If not paths are found, returns None.
+            before grouping. If no paths are found, returns None.
     """
 
     inidx = to_nparray(inidx)
@@ -1620,7 +1620,8 @@ def el_within_n_steps(
                 combining_method=combining_method,
             )
         paths = filter_paths(paths, threshold, quiet=quiet)
-        all_paths.append(paths)
+        if paths is not None:
+            all_paths.append(paths)
     if len(all_paths) == 0:
         return None
     all_paths = pd.concat(all_paths, axis=0)
