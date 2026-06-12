@@ -2707,6 +2707,7 @@ def plot_paths(
         ax.set_xlim(x_min - pre_pad, x_max + post_pad)
 
         if save_plot:
+            plt.rcParams['svg.fonttype'] = 'none'
             fig.savefig(file_name + ".svg")
             print(f"Graph saved as {file_name}.svg")
 
