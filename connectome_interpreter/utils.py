@@ -2707,8 +2707,8 @@ def plot_paths(
         ax.set_xlim(x_min - pre_pad, x_max + post_pad)
 
         if save_plot:
-            fig.savefig(file_name + ".pdf")
-            print(f"Graph saved as {file_name}.pdf")
+            fig.savefig(file_name + ".svg")
+            print(f"Graph saved as {file_name}.svg")
 
         if show:
             plt.show()
