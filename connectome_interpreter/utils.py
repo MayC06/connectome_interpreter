@@ -2619,9 +2619,9 @@ def plot_paths(
 
         net.set_options("""
             var options = {
-              "physics":{"enabled":false,"solver":"forceAtlas2Based",
+              "physics":{"enabled":true,"solver":"forceAtlas2Based",
               "forceAtlas2Based":{"springConstant":0.1},"minVelocity":0.1},
-              "nodes":{"physics":false},"edges":{"smooth":false}
+              "nodes":{"physics":true},"edges":{"smooth":false}
             }
             """)
 
