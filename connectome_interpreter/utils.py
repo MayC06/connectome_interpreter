@@ -2601,6 +2601,7 @@ def plot_paths(
             n["x"] *= int(figsize[0] * 80)
             n["y"] *= int(figsize[1] * 80)
             n["label"] = label_map[n["id"]] if node_text else ""
+            print(nc_dict[n["id"]])
             n["color"] = mpl.colors.rgb2hex(nc_dict[n["id"]], keep_alpha=True)
             n["size"] = node_size / 20
             n["font"] = {
