@@ -1959,6 +1959,7 @@ def conn_by_path_length(
     combining_method: str = "mean",
     width: int = 800,
     height: int = 400,
+    chunk_size: int = 2000,
 ):
     """Plots the connectivity from all of inidx (grouped by inidx_map) to outidx
     (grouped by outidx_map)  within `n` hops, aggregated by `combining_method`. Either
@@ -2018,6 +2019,7 @@ def conn_by_path_length(
         outidx_map=outidx_map,
         intermediate_group=intermediate_group,
         combining_method=combining_method,
+        chunk_size=chunk_size,
     )
 
     fig = px.line(
