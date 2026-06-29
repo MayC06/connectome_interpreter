@@ -1862,6 +1862,7 @@ def conn_by_path_length_data(
 
         if paths is not None and not paths.empty:
             # has colunms: pre, post, weight
+            
             df = effective_conn_from_paths(
                 paths,
                 wide=False,
@@ -2310,6 +2311,7 @@ def effective_conn_from_paths(
         result_el.loc[:, ["post"]] = result_el.post_idx.map(local_to_global_idx)
 
     else:
+        print('using GPU')
         device = torch.device("cuda")
         with torch.no_grad():
             chunk_size = min(chunk_size, m)
